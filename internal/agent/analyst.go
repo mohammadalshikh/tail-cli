@@ -25,6 +25,7 @@ type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
 	Temperature float32       `json:"temperature"`
+	MaxTokens   int           `json:"max_tokens"`
 }
 
 type ChatResponse struct {
@@ -41,7 +42,7 @@ type ChatMessage struct {
 func NewOpenAIClient() (*OpenAIClient, error) {
 	key := os.Getenv("OPENAI_API_KEY")
 	if key == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
+		return nil, fmt.Errorf("Error: OPENAI_API_KEY environment variable not set")
 	}
 	return &OpenAIClient{
 		apiKey:     key,
@@ -52,14 +53,24 @@ func NewOpenAIClient() (*OpenAIClient, error) {
 }
 
 func buildPrompt(entry analyzer.LogEntry, context []string) string {
+	contextStr := ""
+	if len(context) > 0 {
+		for i, line := range context {
+			contextStr += fmt.Sprintf("%d. %s\n", i+1, line)
+		}
+	} else {
+		contextStr = "No context available"
+	}
+
 	return fmt.Sprintf(
-		"- This request took %sms (P99 outlier)\n"+
-			"- Log: %s\n"+
-			"- Context: %v\n"+
-			"- Explain why this request is slow.",
+		"Analyze this log entry that shows P99 latency spike:\n\n"+
+			"Latency: %.0fms\n"+
+			"Entry: %s\n\n"+
+			"Context (previous logs):\n%s\n"+
+			"Explain briefly why this is slow.",
 		entry.Latency,
 		entry.Data,
-		context,
+		contextStr,
 	)
 }
 
@@ -68,11 +79,16 @@ func buildChatRequest(model, prompt string) ChatRequest {
 		Model: model,
 		Messages: []ChatMessage{
 			{
+				Role:    "system",
+				Content: "You are a senior SRE analyzing production logs. Give a 2-3 sentence root cause analysis focusing on: what failed, why it failed, and immediate action. Be technical and concise.",
+			},
+			{
 				Role:    "user",
 				Content: prompt,
 			},
 		},
-		Temperature: 0.7,
+		Temperature: 0.3,
+		MaxTokens:   150,
 	}
 }
 
@@ -86,12 +102,12 @@ func (c *OpenAIClient) Analyze(
 
 	requestJSON, err := json.Marshal(chatRequest)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Error (failed to marshal request JSON): %w", err)
 	}
 
 	req, err := http.NewRequest("POST", c.apiURL, bytes.NewBuffer(requestJSON))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("Error (failed to create request): %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -99,21 +115,23 @@ func (c *OpenAIClient) Analyze(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Error: API request failed: %w", err)
+		return "", fmt.Errorf("Error (API request failed): %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Error: API response status %d", resp.StatusCode)
+		var errBody map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&errBody)
+		return "", fmt.Errorf("Error (API response failed): %d: %v", resp.StatusCode, errBody)
 	}
 
 	var chatResp ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("Error: failed to parse response: %w", err)
+		return "", fmt.Errorf("Error (failed to parse response): %w", err)
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("Error: no response from AI")
+		return "", fmt.Errorf("Error (no response from AI)")
 	}
 
 	return chatResp.Choices[0].Message.Content, nil

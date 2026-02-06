@@ -8,6 +8,7 @@ type LogEntry struct {
 	Latency   float64
 	Data      string
 	Timestamp string
+	Context   []string
 }
 
 type MinHeap []LogEntry
