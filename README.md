@@ -1,6 +1,6 @@
 # Tail CLI
 
-A CLI tool for analyzing log files to detect P99 latency spikes and explain root causes using AI
+A CLI tool for detecting P99 latency spikes and explaining root causes using AI
 
 ## Features
 - P99 latency analysis using Top-K selection with min-heap
